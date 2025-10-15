@@ -1026,7 +1026,13 @@ def sale_popup():
 
     win = tk.Toplevel(root)
     win.title(f"🛒 Record Sale - {cat_name}")
-    win.geometry("450x250")
+    
+    # Make window larger if it's cold drinks to accommodate brand selection
+    if cat_name.lower() == "cold drinks":
+        win.geometry("450x350")
+    else:
+        win.geometry("450x250")
+        
     win.configure(bg='white')
     win.resizable(False, False)
     win.transient(root)
@@ -1044,10 +1050,49 @@ def sale_popup():
     form_frame = tk.Frame(win, bg='white')
     form_frame.pack(fill="both", expand=True, padx=30, pady=20)
     
+    current_row = 0
+    
+    # Brand selection for cold drinks
+    brand_combo = None
+    if cat_name.lower() == "cold drinks":
+        tk.Label(form_frame, text="Select Brand *", font=('Arial', 10, 'bold'), 
+                 fg=DARK_TEXT, bg='white').grid(row=current_row, column=0, sticky="w", pady=(0,5))
+        current_row += 1
+        
+        # Get available cold drink brands from inventory
+        cold_drink_brands = []
+        try:
+            conn = get_connection()
+            if conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT name, quantity, unit FROM raw_materials 
+                    WHERE name IN ('Coca Cola', 'Pepsi', 'Sprite', 'Fanta', 'Thumbs Up', 'Limca')
+                    ORDER BY name
+                """)
+                brands = cur.fetchall()
+                conn.close()
+                
+                for brand_name, qty, unit in brands:
+                    qty = float(qty)
+                    if qty > 0:
+                        cold_drink_brands.append(f"{brand_name} (Stock: {qty} {unit})")
+                    else:
+                        cold_drink_brands.append(f"{brand_name} (Out of Stock)")
+        except Exception as e:
+            cold_drink_brands = ["Coca Cola", "Pepsi", "Sprite", "Fanta", "Thumbs Up", "Limca"]
+        
+        brand_combo = ttk.Combobox(form_frame, values=cold_drink_brands, state="readonly", 
+                                  width=32, font=('Arial', 10))
+        brand_combo.grid(row=current_row, column=0, columnspan=2, sticky="ew", pady=(0,15))
+        current_row += 1
+    
     tk.Label(form_frame, text="Quantity Sold *", font=('Arial', 10, 'bold'), 
-             fg=DARK_TEXT, bg='white').grid(row=0, column=0, sticky="w", pady=(0,5))
+             fg=DARK_TEXT, bg='white').grid(row=current_row, column=0, sticky="w", pady=(0,5))
+    current_row += 1
     e_qty = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
-    e_qty.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    e_qty.grid(row=current_row, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    current_row += 1
     
     form_frame.columnconfigure(0, weight=1)
 
@@ -1060,6 +1105,74 @@ def sale_popup():
             messagebox.showerror("Error", "Enter valid positive quantity")
             return
 
+        # Special handling for cold drinks
+        if cat_name.lower() == "cold drinks":
+            if not brand_combo or not brand_combo.get():
+                messagebox.showerror("Error", "Please select a brand!")
+                return
+            
+            # Extract brand name from selection (remove stock info)
+            selected_brand = brand_combo.get().split(" (Stock:")[0].split(" (Out of Stock)")[0]
+            
+            # Check if brand is out of stock
+            if "Out of Stock" in brand_combo.get():
+                messagebox.showerror("Error", f"{selected_brand} is out of stock!")
+                return
+            
+            # For cold drinks, directly deduct from the selected brand's inventory
+            conn = get_connection()
+            if not conn:
+                messagebox.showerror("Error", "DB connection failed")
+                return
+            
+            try:
+                cur = conn.cursor()
+                # Get current stock of selected brand
+                cur.execute("SELECT quantity FROM raw_materials WHERE name = %s FOR UPDATE", (selected_brand,))
+                result = cur.fetchone()
+                
+                if not result:
+                    conn.rollback()
+                    conn.close()
+                    messagebox.showerror("Error", f"{selected_brand} not found in inventory")
+                    return
+                
+                current_stock = float(result[0])
+                if current_stock < qty_sold:
+                    conn.rollback()
+                    conn.close()
+                    messagebox.showerror("Error", f"Not enough {selected_brand} in stock! Available: {current_stock}")
+                    return
+                
+                # Deduct the stock
+                new_stock = current_stock - qty_sold
+                cur.execute("UPDATE raw_materials SET quantity = %s, last_updated = NOW() WHERE name = %s", 
+                           (new_stock, selected_brand))
+                conn.commit()
+                conn.close()
+                
+                # Show success message with brand info
+                messagebox.showinfo("✅ Success", 
+                    f"Sale recorded successfully!\n\n"
+                    f"Brand: {selected_brand}\n"
+                    f"Quantity Sold: {qty_sold}\n"
+                    f"Remaining Stock: {new_stock}")
+                
+                load_inventory()
+                update_stats()
+                win.destroy()
+                return
+                
+            except Exception as e:
+                try:
+                    conn.rollback()
+                    conn.close()
+                except:
+                    pass
+                messagebox.showerror("Error", f"Failed to process sale: {e}")
+                return
+
+        # Regular processing for non-cold drinks
         mats = get_category_materials(cat_id)
         if not mats:
             messagebox.showerror("Error", "No materials mapped to this category")
@@ -1169,7 +1282,7 @@ def sale_popup():
 
     # Buttons frame
     btn_frame = tk.Frame(form_frame, bg='white')
-    btn_frame.grid(row=2, column=0, columnspan=2, pady=10)
+    btn_frame.grid(row=current_row, column=0, columnspan=2, pady=10)
     
     ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=(0,10))
     ttk.Button(btn_frame, text="🛒 Confirm Sale", command=process_sale, style='Warning.TButton').pack(side="left")

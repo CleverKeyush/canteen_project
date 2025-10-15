@@ -158,7 +158,7 @@ INSERT INTO categories (name, description, selling_price) VALUES
 ('Only Vada', 'Potato fritter without pav', 8.00),             -- ₹8 per vada
 ('Only Pav', 'Plain bread bun', 3.00),                         -- ₹3 per pav
 ('Samosa', 'Fried pastry with spiced potato filling', 12.00),  -- ₹12 per samosa
-('Cold Drinks', 'Bottled soft drinks and beverages', 25.00),   -- ₹25 per bottle (retail)
+('Cold Drinks', 'Bottled soft drinks - brand selected at sale', 25.00), -- ₹25 per bottle
 ('Tea/Coffee', 'Hot beverages', 10.00)                         -- ₹10 per cup
 ON CONFLICT (name) DO NOTHING;
 
@@ -196,13 +196,13 @@ INSERT INTO category_materials (category_id, material_id, amount_per_unit) VALUE
 (4, 13, 0.002), -- 2g red chili powder
 (4, 21, 0.002), -- 2g salt
 
--- Cold Drinks (1 bottle = 1 unit, no processing needed)
--- These don't need material mapping as they're sold as-is
+-- Cold Drinks - No material mapping needed (handled by brand selection in app)
+-- The brand selection in the app will directly deduct from raw materials
 
--- Tea (1 cup uses)
+-- Tea/Coffee (1 cup uses)
 (6, 23, 0.005), -- 5g tea powder
 (6, 24, 0.1),   -- 100ml milk
-(6, 22, 0.01)   -- 10g sugar (removed comma from last item)
+(6, 22, 0.01)   -- 10g sugar
 ON CONFLICT (category_id, material_id) DO NOTHING;
 
 -- Function to automatically log stock transactions (optional)
