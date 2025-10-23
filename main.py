@@ -1750,7 +1750,7 @@ ttk.Button(cat_btn_frame, text="➕ Add Category", command=add_category_popup,
            style='Success.TButton').pack(fill="x", pady=5)
 ttk.Button(cat_btn_frame, text="✏️ Edit Category", command=edit_category_popup, 
            style='Warning.TButton').pack(fill="x", pady=5)
-ttk.Button(cat_btn_frame, text="�️ Dpelete Category", command=delete_category_confirm, 
+ttk.Button(cat_btn_frame, text="🗑️ Delete Category", command=delete_category_confirm, 
            style='Danger.TButton').pack(fill="x", pady=5)
 ttk.Button(cat_btn_frame, text="🔗 Map Material to Category", command=map_material_popup, 
            style='Primary.TButton').pack(fill="x", pady=5)
