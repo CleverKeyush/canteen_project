@@ -7,7 +7,7 @@ def fetch_inventory():
     if not conn:
         return []
     cur = conn.cursor()
-    cur.execute("SELECT id, name, quantity, unit, threshold, supplier_id FROM raw_materials ORDER BY id")
+    cur.execute("SELECT id, name, quantity, unit, threshold, cost_per_unit, supplier_id FROM raw_materials ORDER BY id")
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -17,7 +17,7 @@ def get_material(material_id):
     if not conn:
         return None
     cur = conn.cursor()
-    cur.execute("SELECT id, name, quantity, unit, threshold, supplier_id FROM raw_materials WHERE id = %s", (material_id,))
+    cur.execute("SELECT id, name, quantity, unit, threshold, cost_per_unit, supplier_id FROM raw_materials WHERE id = %s", (material_id,))
     row = cur.fetchone()
     conn.close()
     return row
@@ -56,7 +56,7 @@ def adjust_material_quantity(material_id, delta):
         print("adjust_material_quantity error:", e)
         return None
 
-def add_material(name, quantity, unit, threshold, supplier_id=None):
+def add_material(name, quantity, unit, threshold, cost_per_unit=0.0, supplier_id=None):
     """Add new raw material to inventory"""
     conn = get_connection()
     if not conn:
@@ -64,9 +64,9 @@ def add_material(name, quantity, unit, threshold, supplier_id=None):
     try:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO raw_materials (name, quantity, unit, threshold, supplier_id, last_updated) 
-            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
-        """, (name, quantity, unit, threshold, supplier_id, datetime.now()))
+            INSERT INTO raw_materials (name, quantity, unit, threshold, cost_per_unit, supplier_id, last_updated) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+        """, (name, quantity, unit, threshold, cost_per_unit, supplier_id, datetime.now()))
         material_id = cur.fetchone()[0]
         conn.commit()
         conn.close()
@@ -79,7 +79,7 @@ def add_material(name, quantity, unit, threshold, supplier_id=None):
             pass
         return False, str(e)
 
-def update_material(material_id, name, quantity, unit, threshold, supplier_id=None):
+def update_material(material_id, name, quantity, unit, threshold, cost_per_unit=0.0, supplier_id=None):
     """Update existing raw material"""
     conn = get_connection()
     if not conn:
@@ -88,9 +88,9 @@ def update_material(material_id, name, quantity, unit, threshold, supplier_id=No
         cur = conn.cursor()
         cur.execute("""
             UPDATE raw_materials 
-            SET name = %s, quantity = %s, unit = %s, threshold = %s, supplier_id = %s, last_updated = %s 
+            SET name = %s, quantity = %s, unit = %s, threshold = %s, cost_per_unit = %s, supplier_id = %s, last_updated = %s 
             WHERE id = %s
-        """, (name, quantity, unit, threshold, supplier_id, datetime.now(), material_id))
+        """, (name, quantity, unit, threshold, cost_per_unit, supplier_id, datetime.now(), material_id))
         if cur.rowcount == 0:
             conn.rollback()
             conn.close()
@@ -188,10 +188,21 @@ def calculate_material_cost(category_id):
         return 0.0
     try:
         cur = conn.cursor()
-        cur.execute("SELECT calculate_material_cost(%s)", (category_id,))
-        result = cur.fetchone()
+        # Get all materials used in this category with their costs
+        cur.execute("""
+            SELECT cm.amount_per_unit, rm.cost_per_unit
+            FROM category_materials cm
+            JOIN raw_materials rm ON cm.material_id = rm.id
+            WHERE cm.category_id = %s
+        """, (category_id,))
+        
+        total_cost = 0.0
+        for amount_per_unit, cost_per_unit in cur.fetchall():
+            if amount_per_unit and cost_per_unit:
+                total_cost += float(amount_per_unit) * float(cost_per_unit)
+        
         conn.close()
-        return float(result[0]) if result and result[0] else 0.0
+        return total_cost
     except Exception as e:
         try:
             conn.close()
@@ -278,20 +289,25 @@ def get_item_profitability():
         return []
     try:
         cur = conn.cursor()
-        cur.execute("""
-            SELECT c.name, c.selling_price, calculate_material_cost(c.id) as material_cost,
-                   (c.selling_price - calculate_material_cost(c.id)) as profit_per_unit,
-                   CASE 
-                       WHEN c.selling_price > 0 THEN 
-                           ROUND(((c.selling_price - calculate_material_cost(c.id)) / c.selling_price) * 100, 2)
-                       ELSE 0 
-                   END as profit_margin_percent
-            FROM categories c
-            ORDER BY profit_per_unit DESC
-        """)
-        rows = cur.fetchall()
+        cur.execute("SELECT id, name, selling_price FROM categories ORDER BY name")
+        categories = cur.fetchall()
         conn.close()
-        return rows
+        
+        results = []
+        for cat_id, name, selling_price in categories:
+            material_cost = calculate_material_cost(cat_id)
+            profit_per_unit = float(selling_price) - material_cost
+            
+            if selling_price > 0:
+                profit_margin_percent = round((profit_per_unit / float(selling_price)) * 100, 2)
+            else:
+                profit_margin_percent = 0
+            
+            results.append((name, selling_price, material_cost, profit_per_unit, profit_margin_percent))
+        
+        # Sort by profit per unit descending
+        results.sort(key=lambda x: x[3], reverse=True)
+        return results
     except Exception as e:
         try:
             conn.close()

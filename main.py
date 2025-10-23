@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, font
 from decimal import Decimal
 from inventory import fetch_inventory, get_material, adjust_material_quantity, add_material, update_material, delete_material, calculate_material_cost, record_sale_with_profit, get_profit_summary, get_item_profitability
-from categories import fetch_categories, create_category, set_category_material, get_category_materials
+from categories import fetch_categories, create_category, update_category, delete_category, set_category_material, get_category_materials
 from suppliers import fetch_suppliers, get_supplier_by_id, update_supplier, get_supplier_for_material
 from whatsapp_notify import send_whatsapp_twilio, open_whatsapp_web, TWILIO_ENABLED
 from db import get_connection
@@ -174,11 +174,11 @@ status_frame.pack(side="right")
 inv_tree_frame = tk.Frame(inv_left, bg=CARD_BG)
 inv_tree_frame.pack(fill="both", expand=True, padx=15, pady=(0,15))
 
-inv_cols = ("ID", "Name", "Quantity", "Unit", "Threshold", "Supplier ID", "Status")
+inv_cols = ("ID", "Name", "Quantity", "Unit", "Threshold", "Cost/Unit (₹)", "Supplier ID", "Status")
 inv_tree = ttk.Treeview(inv_tree_frame, columns=inv_cols, show="headings", height=15, style='Custom.Treeview')
 
 # Configure column widths and headings
-column_widths = {"ID": 60, "Name": 200, "Quantity": 100, "Unit": 80, "Threshold": 100, "Supplier ID": 100, "Status": 100}
+column_widths = {"ID": 60, "Name": 180, "Quantity": 80, "Unit": 60, "Threshold": 80, "Cost/Unit (₹)": 100, "Supplier ID": 80, "Status": 100}
 for c in inv_cols:
     inv_tree.heading(c, text=c)
     inv_tree.column(c, anchor="center", width=column_widths.get(c, 100))
@@ -201,7 +201,7 @@ def load_inventory():
     
     for r in fetch_inventory():
         total_items += 1
-        # Add status column
+        # r = (id, name, quantity, unit, threshold, cost_per_unit, supplier_id)
         quantity = float(r[2]) if r[2] else 0
         threshold = float(r[4]) if r[4] else 0
         
@@ -240,7 +240,7 @@ def load_inventory():
 def add_material_popup():
     win = tk.Toplevel(root)
     win.title("➕ Add New Material")
-    win.geometry("500x400")
+    win.geometry("500x450")
     win.configure(bg='white')
     win.resizable(False, False)
     win.transient(root)
@@ -278,10 +278,15 @@ def add_material_popup():
     e_threshold = tk.Entry(form_frame, width=40, font=('Arial', 10), relief='solid', bd=1)
     e_threshold.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0,15))
     
-    tk.Label(form_frame, text="Supplier ID (optional)", font=('Arial', 10, 'bold'), 
+    tk.Label(form_frame, text="Cost per Unit (₹) *", font=('Arial', 10, 'bold'), 
              fg=DARK_TEXT, bg='white').grid(row=8, column=0, sticky="w", pady=(0,5))
+    e_cost = tk.Entry(form_frame, width=40, font=('Arial', 10), relief='solid', bd=1)
+    e_cost.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    
+    tk.Label(form_frame, text="Supplier ID (optional)", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=10, column=0, sticky="w", pady=(0,5))
     e_supplier = tk.Entry(form_frame, width=40, font=('Arial', 10), relief='solid', bd=1)
-    e_supplier.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    e_supplier.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(0,20))
     
     form_frame.columnconfigure(0, weight=1)
     
@@ -290,8 +295,9 @@ def add_material_popup():
         try:
             quantity = float(e_qty.get())
             threshold = float(e_threshold.get())
+            cost_per_unit = float(e_cost.get())
         except ValueError:
-            messagebox.showerror("❌ Error", "Please enter valid numbers for quantity and threshold!")
+            messagebox.showerror("❌ Error", "Please enter valid numbers for quantity, threshold, and cost!")
             return
         
         unit = e_unit.get().strip()
@@ -301,6 +307,10 @@ def add_material_popup():
             messagebox.showerror("❌ Error", "Name and unit are required!")
             return
         
+        if cost_per_unit < 0:
+            messagebox.showerror("❌ Error", "Cost per unit cannot be negative!")
+            return
+        
         if supplier_id:
             try:
                 supplier_id = int(supplier_id)
@@ -308,7 +318,7 @@ def add_material_popup():
                 messagebox.showerror("❌ Error", "Supplier ID must be a number!")
                 return
         
-        ok, result = add_material(name, quantity, unit, threshold, supplier_id)
+        ok, result = add_material(name, quantity, unit, threshold, cost_per_unit, supplier_id)
         if ok:
             messagebox.showinfo("✅ Success", f"Material '{name}' added successfully with ID: {result}")
             load_inventory()
@@ -319,7 +329,7 @@ def add_material_popup():
     
     # Buttons frame
     btn_frame = tk.Frame(form_frame, bg='white')
-    btn_frame.grid(row=10, column=0, columnspan=2, pady=10)
+    btn_frame.grid(row=12, column=0, columnspan=2, pady=10)
     
     ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=(0,10))
     ttk.Button(btn_frame, text="✅ Add Material", command=save_material, style='Success.TButton').pack(side="left")
@@ -337,7 +347,7 @@ def edit_material_popup():
     
     win = tk.Toplevel(root)
     win.title("✏️ Edit Material")
-    win.geometry("500x400")
+    win.geometry("500x450")
     win.configure(bg='white')
     win.resizable(False, False)
     win.transient(root)
@@ -379,11 +389,17 @@ def edit_material_popup():
     e_threshold.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0,15))
     e_threshold.insert(0, material_data[4])
     
-    tk.Label(form_frame, text="Supplier ID", font=('Arial', 10, 'bold'), 
+    tk.Label(form_frame, text="Cost per Unit (₹) *", font=('Arial', 10, 'bold'), 
              fg=DARK_TEXT, bg='white').grid(row=8, column=0, sticky="w", pady=(0,5))
+    e_cost = tk.Entry(form_frame, width=40, font=('Arial', 10), relief='solid', bd=1)
+    e_cost.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    e_cost.insert(0, material_data[5] if material_data[5] else "0")
+    
+    tk.Label(form_frame, text="Supplier ID", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=10, column=0, sticky="w", pady=(0,5))
     e_supplier = tk.Entry(form_frame, width=40, font=('Arial', 10), relief='solid', bd=1)
-    e_supplier.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0,20))
-    e_supplier.insert(0, material_data[5] if material_data[5] else "")
+    e_supplier.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    e_supplier.insert(0, material_data[6] if material_data[6] else "")
     
     form_frame.columnconfigure(0, weight=1)
     
@@ -392,8 +408,9 @@ def edit_material_popup():
         try:
             quantity = float(e_qty.get())
             threshold = float(e_threshold.get())
+            cost_per_unit = float(e_cost.get())
         except ValueError:
-            messagebox.showerror("❌ Error", "Please enter valid numbers for quantity and threshold!")
+            messagebox.showerror("❌ Error", "Please enter valid numbers for quantity, threshold, and cost!")
             return
         
         unit = e_unit.get().strip()
@@ -403,6 +420,10 @@ def edit_material_popup():
             messagebox.showerror("❌ Error", "Name and unit are required!")
             return
         
+        if cost_per_unit < 0:
+            messagebox.showerror("❌ Error", "Cost per unit cannot be negative!")
+            return
+        
         if supplier_id:
             try:
                 supplier_id = int(supplier_id)
@@ -410,7 +431,7 @@ def edit_material_popup():
                 messagebox.showerror("❌ Error", "Supplier ID must be a number!")
                 return
         
-        ok, result = update_material(material_id, name, quantity, unit, threshold, supplier_id)
+        ok, result = update_material(material_id, name, quantity, unit, threshold, cost_per_unit, supplier_id)
         if ok:
             messagebox.showinfo("✅ Success", f"Material updated successfully!")
             load_inventory()
@@ -421,7 +442,7 @@ def edit_material_popup():
     
     # Buttons frame
     btn_frame = tk.Frame(form_frame, bg='white')
-    btn_frame.grid(row=10, column=0, columnspan=2, pady=10)
+    btn_frame.grid(row=12, column=0, columnspan=2, pady=10)
     
     ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=(0,10))
     ttk.Button(btn_frame, text="✅ Update Material", command=update_material_data, style='Primary.TButton').pack(side="left")
@@ -745,11 +766,11 @@ cat_title.pack(side="left")
 cat_tree_frame = tk.Frame(cat_left, bg=CARD_BG)
 cat_tree_frame.pack(fill="both", expand=True, padx=15, pady=(0,15))
 
-cat_cols = ("ID", "Name", "Description")
+cat_cols = ("ID", "Name", "Description", "Price (₹)")
 cat_tree = ttk.Treeview(cat_tree_frame, columns=cat_cols, show="headings", height=12, style='Custom.Treeview')
 
 # Configure column widths
-cat_column_widths = {"ID": 60, "Name": 200, "Description": 300}
+cat_column_widths = {"ID": 60, "Name": 150, "Description": 250, "Price (₹)": 100}
 for c in cat_cols:
     cat_tree.heading(c, text=c)
     cat_tree.column(c, anchor="w" if c == "Description" else "center", width=cat_column_widths.get(c, 150))
@@ -840,7 +861,7 @@ cat_controls_title.pack(pady=(15,10))
 def add_category_popup():
     win = tk.Toplevel(root)
     win.title("➕ Add New Category")
-    win.geometry("450x250")
+    win.geometry("450x320")
     win.configure(bg='white')
     win.resizable(False, False)
     
@@ -868,19 +889,39 @@ def add_category_popup():
     tk.Label(form_frame, text="Description", font=('Arial', 10, 'bold'), 
              fg=DARK_TEXT, bg='white').grid(row=2, column=0, sticky="w", pady=(0,5))
     e_desc = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
-    e_desc.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    e_desc.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    
+    tk.Label(form_frame, text="Selling Price (₹) *", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=4, column=0, sticky="w", pady=(0,5))
+    e_price = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
+    e_price.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0,20))
     
     form_frame.columnconfigure(0, weight=1)
     
     def save():
         name = e_name.get().strip()
         desc = e_desc.get().strip()
+        price_str = e_price.get().strip()
+        
         if not name:
             messagebox.showerror("❌ Error", "Category name is required!")
             return
-        ok, res = create_category(name, desc)
+        
+        if not price_str:
+            messagebox.showerror("❌ Error", "Selling price is required!")
+            return
+        
+        try:
+            selling_price = float(price_str)
+            if selling_price <= 0:
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("❌ Error", "Please enter a valid selling price!")
+            return
+        
+        ok, res = create_category(name, desc, selling_price)
         if ok:
-            messagebox.showinfo("✅ Success", f"Category '{name}' created successfully!")
+            messagebox.showinfo("✅ Success", f"Category '{name}' created successfully with price ₹{selling_price}!")
             load_categories()
             win.destroy()
         else:
@@ -888,12 +929,127 @@ def add_category_popup():
     
     # Buttons frame
     btn_frame = tk.Frame(form_frame, bg='white')
-    btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
+    btn_frame.grid(row=6, column=0, columnspan=2, pady=10)
     
     ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=(0,10))
     ttk.Button(btn_frame, text="✅ Save Category", command=save, style='Success.TButton').pack(side="left")
     
     e_name.focus_set()
+
+def edit_category_popup():
+    sel = cat_tree.selection()
+    if not sel:
+        messagebox.showerror("❌ Error", "Please select a category to edit!")
+        return
+    
+    # Get current category data
+    cat_id = cat_tree.item(sel[0])['values'][0]
+    cat_name = cat_tree.item(sel[0])['values'][1]
+    cat_desc = cat_tree.item(sel[0])['values'][2]
+    cat_price = cat_tree.item(sel[0])['values'][3]
+    
+    win = tk.Toplevel(root)
+    win.title("✏️ Edit Category")
+    win.geometry("450x320")
+    win.configure(bg='white')
+    win.resizable(False, False)
+    
+    # Center the window
+    win.transient(root)
+    win.grab_set()
+    
+    # Header
+    header = tk.Frame(win, bg=SECONDARY_COLOR, height=50)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    
+    tk.Label(header, text="✏️ Edit Category", font=('Arial', 14, 'bold'), 
+             fg='white', bg=SECONDARY_COLOR).pack(pady=15)
+    
+    # Form frame
+    form_frame = tk.Frame(win, bg='white')
+    form_frame.pack(fill="both", expand=True, padx=30, pady=20)
+    
+    tk.Label(form_frame, text="Category Name *", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=0, column=0, sticky="w", pady=(0,5))
+    e_name = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
+    e_name.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    e_name.insert(0, cat_name)
+    
+    tk.Label(form_frame, text="Description", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=2, column=0, sticky="w", pady=(0,5))
+    e_desc = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
+    e_desc.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    e_desc.insert(0, cat_desc)
+    
+    tk.Label(form_frame, text="Selling Price (₹) *", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=4, column=0, sticky="w", pady=(0,5))
+    e_price = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
+    e_price.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    e_price.insert(0, str(cat_price))
+    
+    form_frame.columnconfigure(0, weight=1)
+    
+    def update():
+        name = e_name.get().strip()
+        desc = e_desc.get().strip()
+        price_str = e_price.get().strip()
+        
+        if not name:
+            messagebox.showerror("❌ Error", "Category name is required!")
+            return
+        
+        if not price_str:
+            messagebox.showerror("❌ Error", "Selling price is required!")
+            return
+        
+        try:
+            selling_price = float(price_str)
+            if selling_price <= 0:
+                raise ValueError()
+        except ValueError:
+            messagebox.showerror("❌ Error", "Please enter a valid selling price!")
+            return
+        
+        ok, res = update_category(cat_id, name, desc, selling_price)
+        if ok:
+            messagebox.showinfo("✅ Success", f"Category '{name}' updated successfully!")
+            load_categories()
+            win.destroy()
+        else:
+            messagebox.showerror("❌ Error", res)
+    
+    # Buttons frame
+    btn_frame = tk.Frame(form_frame, bg='white')
+    btn_frame.grid(row=6, column=0, columnspan=2, pady=10)
+    
+    ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=(0,10))
+    ttk.Button(btn_frame, text="✅ Update Category", command=update, style='Warning.TButton').pack(side="left")
+    
+    e_name.focus_set()
+
+def delete_category_confirm():
+    sel = cat_tree.selection()
+    if not sel:
+        messagebox.showerror("❌ Error", "Please select a category to delete!")
+        return
+    
+    cat_id = cat_tree.item(sel[0])['values'][0]
+    cat_name = cat_tree.item(sel[0])['values'][1]
+    
+    # Confirm deletion
+    result = messagebox.askyesno("⚠️ Confirm Delete", 
+                                f"Are you sure you want to delete category '{cat_name}'?\n\n"
+                                "This will also remove all material mappings for this category.\n"
+                                "This action cannot be undone!")
+    
+    if result:
+        ok, res = delete_category(cat_id)
+        if ok:
+            messagebox.showinfo("✅ Success", f"Category '{cat_name}' deleted successfully!")
+            load_categories()
+        else:
+            messagebox.showerror("❌ Error", f"Failed to delete category: {res}")
 
 def map_material_popup():
     sel = cat_tree.selection()
@@ -905,7 +1061,7 @@ def map_material_popup():
     
     win = tk.Toplevel(root)
     win.title("🔗 Map Material to Category")
-    win.geometry("500x300")
+    win.geometry("600x320")
     win.configure(bg='white')
     win.resizable(False, False)
     win.transient(root)
@@ -923,40 +1079,81 @@ def map_material_popup():
     form_frame = tk.Frame(win, bg='white')
     form_frame.pack(fill="both", expand=True, padx=30, pady=20)
     
-    tk.Label(form_frame, text="Material ID (from inventory) *", font=('Arial', 10, 'bold'), 
+    tk.Label(form_frame, text="Select Material *", font=('Arial', 10, 'bold'), 
              fg=DARK_TEXT, bg='white').grid(row=0, column=0, sticky="w", pady=(0,5))
-    e_mid = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
-    e_mid.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    
+    # Get all materials for dropdown
+    materials = fetch_inventory()
+    material_options = []
+    material_map = {}  # To map display text to material ID
+    
+    if not materials:
+        tk.Label(form_frame, text="⚠️ No materials available. Please add materials to inventory first.", 
+                font=('Arial', 10), fg='red', bg='white').grid(row=1, column=0, columnspan=2, pady=20)
+        ttk.Button(form_frame, text="Close", command=win.destroy).grid(row=2, column=0, columnspan=2, pady=10)
+        return
+    
+    for material in materials:
+        # material = (id, name, quantity, unit, threshold, cost_per_unit, supplier_id)
+        display_text = f"{material[1]} - {material[2]} {material[3]} available (₹{material[5]}/unit)"
+        material_options.append(display_text)
+        material_map[display_text] = material[0]
+    
+    material_combo = ttk.Combobox(form_frame, values=material_options, width=50, font=('Arial', 10), state="readonly")
+    material_combo.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0,5))
+    
+    # Add helpful instruction
+    tk.Label(form_frame, text="💡 Choose the raw material used in this category", 
+             font=('Arial', 9), fg='gray', bg='white').grid(row=2, column=0, columnspan=2, sticky="w", pady=(0,15))
     
     tk.Label(form_frame, text="Amount used per unit *", font=('Arial', 10, 'bold'), 
-             fg=DARK_TEXT, bg='white').grid(row=2, column=0, sticky="w", pady=(0,5))
+             fg=DARK_TEXT, bg='white').grid(row=3, column=0, sticky="w", pady=(0,5))
     e_amt = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
-    e_amt.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0,20))
+    e_amt.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(0,5))
+    
+    # Add helpful instruction for amount
+    tk.Label(form_frame, text="💡 Example: If 1 burger uses 0.2 kg of flour, enter 0.2", 
+             font=('Arial', 9), fg='gray', bg='white').grid(row=5, column=0, columnspan=2, sticky="w", pady=(0,20))
     
     form_frame.columnconfigure(0, weight=1)
     
     def save_map():
-        try:
-            mid = int(e_mid.get())
-            amt = float(e_amt.get())
-        except Exception:
-            messagebox.showerror("❌ Error", "Please enter valid numeric values!")
+        selected_material = material_combo.get()
+        if not selected_material:
+            messagebox.showerror("❌ Error", "Please select a material!")
             return
+        
+        try:
+            mid = material_map[selected_material]
+            amt = float(e_amt.get())
+            if amt <= 0:
+                raise ValueError("Amount must be positive")
+        except ValueError as e:
+            if "Amount must be positive" in str(e):
+                messagebox.showerror("❌ Error", "Amount per unit must be greater than 0!")
+            else:
+                messagebox.showerror("❌ Error", "Please enter a valid amount!")
+            return
+        except Exception:
+            messagebox.showerror("❌ Error", "Please enter valid values!")
+            return
+        
         ok, err = set_category_material(cat_id, mid, amt)
         if ok:
-            messagebox.showinfo("✅ Success", "Material mapping saved successfully!")
+            material_name = selected_material.split(' - ')[0]
+            messagebox.showinfo("✅ Success", f"Material mapping saved successfully!\n\nCategory: {cat_name}\nMaterial: {material_name}\nAmount per unit: {amt}")
             win.destroy()
         else:
             messagebox.showerror("❌ Error", err)
     
     # Buttons frame
     btn_frame = tk.Frame(form_frame, bg='white')
-    btn_frame.grid(row=4, column=0, columnspan=2, pady=10)
+    btn_frame.grid(row=6, column=0, columnspan=2, pady=10)
     
     ttk.Button(btn_frame, text="Cancel", command=win.destroy).pack(side="left", padx=(0,10))
     ttk.Button(btn_frame, text="✅ Save Mapping", command=save_map, style='Success.TButton').pack(side="left")
     
-    e_mid.focus_set()
+    material_combo.focus_set()
 
 def view_category_materials():
     sel = cat_tree.selection()
@@ -1551,6 +1748,10 @@ cat_btn_frame.pack(fill="x", padx=15, pady=10)
 
 ttk.Button(cat_btn_frame, text="➕ Add Category", command=add_category_popup, 
            style='Success.TButton').pack(fill="x", pady=5)
+ttk.Button(cat_btn_frame, text="✏️ Edit Category", command=edit_category_popup, 
+           style='Warning.TButton').pack(fill="x", pady=5)
+ttk.Button(cat_btn_frame, text="�️ Dpelete Category", command=delete_category_confirm, 
+           style='Danger.TButton').pack(fill="x", pady=5)
 ttk.Button(cat_btn_frame, text="🔗 Map Material to Category", command=map_material_popup, 
            style='Primary.TButton').pack(fill="x", pady=5)
 ttk.Button(cat_btn_frame, text="👁️ View Category Materials", command=view_category_materials, 
