@@ -315,3 +315,86 @@ def get_item_profitability():
             pass
         print("get_item_profitability error:", e)
         return []
+
+def predict_tomorrow_production():
+    """Predict how many items can be prepared tomorrow based on current inventory"""
+    conn = get_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM categories ORDER BY name")
+        categories = cur.fetchall()
+        
+        predictions = []
+        for cat_id, cat_name in categories:
+            # Get materials needed for this category directly from database
+            cur.execute("""
+                SELECT cm.material_id, rm.name, cm.amount_per_unit, rm.quantity, rm.unit, rm.threshold, rm.supplier_id
+                FROM category_materials cm
+                JOIN raw_materials rm ON cm.material_id = rm.id
+                WHERE cm.category_id = %s
+            """, (cat_id,))
+            materials_needed = cur.fetchall()
+            
+            if not materials_needed:
+                predictions.append((cat_name, 0, "No materials mapped"))
+                continue
+            
+            min_possible = float('inf')
+            limiting_material = ""
+            
+            for material_id, material_name, amount_per_unit, current_qty, unit, threshold, supplier_id in materials_needed:
+                if amount_per_unit and amount_per_unit > 0:
+                    possible_units = int(float(current_qty) / float(amount_per_unit))
+                    if possible_units < min_possible:
+                        min_possible = possible_units
+                        limiting_material = f"{material_name} ({current_qty} {unit} available)"
+            
+            if min_possible == float('inf'):
+                min_possible = 0
+                limiting_material = "Invalid material amounts"
+            
+            predictions.append((cat_name, min_possible, limiting_material))
+        
+        conn.close()
+        return predictions
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        print("predict_tomorrow_production error:", e)
+        return []
+
+def generate_bill_text(items, customer_name="", customer_phone=""):
+    """Generate formatted bill text"""
+    from datetime import datetime
+    
+    bill_text = "🧾 CANTEEN BILL RECEIPT\n"
+    bill_text += "=" * 35 + "\n"
+    bill_text += f"📅 Date: {datetime.now().strftime('%d/%m/%Y %I:%M %p')}\n"
+    
+    if customer_name:
+        bill_text += f"👤 Customer: {customer_name}\n"
+    if customer_phone:
+        bill_text += f"📱 Phone: {customer_phone}\n"
+    
+    bill_text += "=" * 35 + "\n"
+    bill_text += "ITEMS:\n"
+    bill_text += "-" * 35 + "\n"
+    
+    total_amount = 0
+    for item_name, quantity, unit_price in items:
+        item_total = quantity * unit_price
+        total_amount += item_total
+        bill_text += f"{item_name}\n"
+        bill_text += f"  {quantity} x ₹{unit_price} = ₹{item_total}\n"
+        bill_text += "-" * 35 + "\n"
+    
+    bill_text += f"💰 TOTAL AMOUNT: ₹{total_amount}\n"
+    bill_text += "=" * 35 + "\n"
+    bill_text += "Thank you for your purchase! 😊\n"
+    bill_text += "Visit us again soon! 🍽️"
+    
+    return bill_text, total_amount

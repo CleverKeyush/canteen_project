@@ -2,7 +2,9 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, font
 from decimal import Decimal
-from inventory import fetch_inventory, get_material, adjust_material_quantity, add_material, update_material, delete_material, calculate_material_cost, record_sale_with_profit, get_profit_summary, get_item_profitability
+import time
+import os
+from inventory import fetch_inventory, get_material, adjust_material_quantity, add_material, update_material, delete_material, calculate_material_cost, record_sale_with_profit, get_profit_summary, get_item_profitability, predict_tomorrow_production, generate_bill_text
 from categories import fetch_categories, create_category, update_category, delete_category, set_category_material, get_category_materials
 from suppliers import fetch_suppliers, get_supplier_by_id, update_supplier, get_supplier_for_material
 from whatsapp_notify import send_whatsapp_twilio, open_whatsapp_web, TWILIO_ENABLED
@@ -1224,11 +1226,11 @@ def sale_popup():
     win = tk.Toplevel(root)
     win.title(f"🛒 Record Sale - {cat_name}")
     
-    # Make window larger if it's cold drinks to accommodate brand selection
+    # Make window larger to accommodate customer details and brand selection
     if cat_name.lower() == "cold drinks":
-        win.geometry("450x350")
+        win.geometry("450x450")
     else:
-        win.geometry("450x250")
+        win.geometry("450x350")
         
     win.configure(bg='white')
     win.resizable(False, False)
@@ -1283,6 +1285,25 @@ def sale_popup():
                                   width=32, font=('Arial', 10))
         brand_combo.grid(row=current_row, column=0, columnspan=2, sticky="ew", pady=(0,15))
         current_row += 1
+    
+    tk.Label(form_frame, text="Customer Name (optional)", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=current_row, column=0, sticky="w", pady=(0,5))
+    current_row += 1
+    e_customer = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
+    e_customer.grid(row=current_row, column=0, columnspan=2, sticky="ew", pady=(0,15))
+    current_row += 1
+    
+    tk.Label(form_frame, text="Customer Phone (optional)", font=('Arial', 10, 'bold'), 
+             fg=DARK_TEXT, bg='white').grid(row=current_row, column=0, sticky="w", pady=(0,5))
+    current_row += 1
+    e_phone = tk.Entry(form_frame, width=35, font=('Arial', 10), relief='solid', bd=1)
+    e_phone.grid(row=current_row, column=0, columnspan=2, sticky="ew", pady=(0,5))
+    current_row += 1
+    
+    # Add phone format instruction
+    tk.Label(form_frame, text="💡 Enter 10-digit number (e.g., 9876543210) for WhatsApp bill", 
+             font=('Arial', 9), fg='gray', bg='white').grid(row=current_row, column=0, columnspan=2, sticky="w", pady=(0,15))
+    current_row += 1
     
     tk.Label(form_frame, text="Quantity Sold *", font=('Arial', 10, 'bold'), 
              fg=DARK_TEXT, bg='white').grid(row=current_row, column=0, sticky="w", pady=(0,5))
@@ -1345,15 +1366,42 @@ def sale_popup():
                 new_stock = current_stock - qty_sold
                 cur.execute("UPDATE raw_materials SET quantity = %s, last_updated = NOW() WHERE name = %s", 
                            (new_stock, selected_brand))
+                
+                # Get selling price for cold drinks
+                cur.execute("SELECT selling_price FROM categories WHERE id = %s", (cat_id,))
+                price_row = cur.fetchone()
+                selling_price = float(price_row[0]) if price_row and price_row[0] else 25.0  # Default price for cold drinks
+                
+                # Calculate profit for cold drinks (cost is the material cost)
+                cur.execute("SELECT cost_per_unit FROM raw_materials WHERE name = %s", (selected_brand,))
+                cost_row = cur.fetchone()
+                material_cost = float(cost_row[0]) if cost_row and cost_row[0] else 0.0
+                
                 conn.commit()
                 conn.close()
                 
-                # Show success message with brand info
-                messagebox.showinfo("✅ Success", 
-                    f"Sale recorded successfully!\n\n"
-                    f"Brand: {selected_brand}\n"
-                    f"Quantity Sold: {qty_sold}\n"
-                    f"Remaining Stock: {new_stock}")
+                profit_per_unit = selling_price - material_cost
+                total_profit = profit_per_unit * qty_sold
+                profit_margin = (profit_per_unit / selling_price * 100) if selling_price > 0 else 0
+                
+                profit_msg = f"""Sale recorded successfully! 
+
+📊 PROFIT ANALYSIS:
+• Units Sold: {qty_sold}
+• Selling Price: ₹{selling_price} per unit
+• Material Cost: ₹{material_cost:.2f} per unit
+• Profit per Unit: ₹{profit_per_unit:.2f}
+• Total Profit: ₹{total_profit:.2f}
+• Profit Margin: {profit_margin:.1f}%"""
+                
+                # Generate bill for cold drinks
+                customer_name = e_customer.get().strip()
+                customer_phone = e_phone.get().strip()
+                items = [(f"{selected_brand} ({cat_name})", qty_sold, selling_price)]
+                bill_text, total_amount = generate_bill_text(items, customer_name, customer_phone)
+                
+                # Show bill and offer WhatsApp sending
+                show_bill_popup(bill_text, customer_phone, f"{selected_brand} sale", profit_msg)
                 
                 load_inventory()
                 update_stats()
@@ -1445,6 +1493,13 @@ def sale_popup():
                 
                 # Record sale with profit calculation
                 ok, profit_info = record_sale_with_profit(cat_id, qty_sold, selling_price)
+                
+                # Generate bill
+                customer_name = e_customer.get().strip()
+                customer_phone = e_phone.get().strip()
+                items = [(cat_name, qty_sold, selling_price)]
+                bill_text, total_amount = generate_bill_text(items, customer_name, customer_phone)
+                
                 if ok:
                     profit_msg = f"""Sale recorded successfully! 
 
@@ -1455,7 +1510,9 @@ def sale_popup():
 • Profit per Unit: ₹{profit_info['profit_per_unit']:.2f}
 • Total Profit: ₹{profit_info['total_profit']:.2f}
 • Profit Margin: {profit_info['profit_margin']:.1f}%"""
-                    messagebox.showinfo("✅ Sale Recorded", profit_msg)
+                    
+                    # Show bill popup
+                    show_bill_popup(bill_text, customer_phone, f"{cat_name} sale", profit_msg)
             except Exception as e:
                 messagebox.showinfo("✅ Success", f"Sale recorded successfully! Deducted materials for {qty_sold} units.")
         else:
@@ -1485,6 +1542,578 @@ def sale_popup():
     ttk.Button(btn_frame, text="🛒 Confirm Sale", command=process_sale, style='Warning.TButton').pack(side="left")
     
     e_qty.focus_set()
+
+def show_bill_popup(bill_text, customer_phone="", sale_type="", profit_msg=""):
+    """Show bill popup with e-bill option"""
+    win = tk.Toplevel(root)
+    win.title("🧾 Bill Generated")
+    win.geometry("500x600")
+    win.configure(bg='white')
+    win.resizable(True, True)
+    win.transient(root)
+    
+    # Header
+    header = tk.Frame(win, bg=SUCCESS_COLOR, height=60)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    
+    tk.Label(header, text="🧾 Bill Generated Successfully", font=('Arial', 14, 'bold'), 
+             fg='white', bg=SUCCESS_COLOR).pack(pady=20)
+    
+    # Main frame
+    main_frame = tk.Frame(win, bg='white')
+    main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+    
+    # Bill Details Label
+    tk.Label(main_frame, text="📄 Bill Details:", font=('Arial', 12, 'bold'), 
+             fg=DARK_TEXT, bg='white').pack(anchor="w", pady=(0,10))
+    
+    # Bill text area with border
+    bill_frame = tk.Frame(main_frame, bg='white', relief='solid', bd=1)
+    bill_frame.pack(fill="both", expand=True, pady=(0,20))
+    
+    bill_display = tk.Text(bill_frame, font=('Courier', 10), bg='#f8f9fa', 
+                          relief='flat', wrap='word', height=12)
+    bill_display.pack(fill="both", expand=True, padx=10, pady=10)
+    bill_display.insert('1.0', bill_text)
+    bill_display.config(state='disabled')
+    
+    # Choose Action Label
+    tk.Label(main_frame, text="📋 Choose Action:", font=('Arial', 12, 'bold'), 
+             fg=DARK_TEXT, bg='white').pack(anchor="w", pady=(10,10))
+    
+    # Action buttons frame with border
+    action_frame = tk.Frame(main_frame, bg='white', relief='solid', bd=1)
+    action_frame.pack(fill="x", pady=(0,20))
+    
+    btn_container = tk.Frame(action_frame, bg='white')
+    btn_container.pack(pady=15, padx=15)
+    
+    # Print Bill button
+    print_btn = tk.Button(btn_container, text="🖨️ Print Bill", 
+                         font=('Arial', 10, 'bold'), bg='#3498db', fg='white',
+                         relief='flat', padx=20, pady=8, cursor='hand2',
+                         command=lambda: print_bill_text(bill_text))
+    print_btn.pack(side="left", padx=(0,10))
+    
+    # Send E-Bill button
+    def send_ebill():
+        if not customer_phone or not customer_phone.strip():
+            messagebox.showerror("❌ Error", "No customer phone number provided!\nCannot send E-Bill without phone number.")
+            return
+        
+        try:
+            # Format phone number for WhatsApp
+            phone = customer_phone.strip()
+            
+            # Add +91 if not present and number is 10 digits
+            if not phone.startswith('+'):
+                if len(phone) == 10 and phone.isdigit():
+                    phone = '+91' + phone
+                elif not phone.startswith('91') and len(phone) == 10:
+                    phone = '+91' + phone
+                elif phone.startswith('91') and len(phone) == 12:
+                    phone = '+' + phone
+                else:
+                    phone = '+91' + phone.lstrip('0')
+            
+            # Format message for WhatsApp
+            whatsapp_msg = f"🧾 *Your Bill from Canteen*\n\n{bill_text}\n\nThank you for your purchase! 😊"
+            
+            if TWILIO_ENABLED:
+                success, result = send_whatsapp_twilio(phone, whatsapp_msg)
+                if success:
+                    messagebox.showinfo("✅ E-Bill Sent!", 
+                                      f"E-Bill sent successfully via WhatsApp!\n\n"
+                                      f"📞 To: {phone}\n"
+                                      f"📧 Message ID: {result}")
+                else:
+                    messagebox.showerror("❌ Send Failed", f"Failed to send E-Bill via Twilio:\n{result}")
+            else:
+                # Open WhatsApp Web as fallback
+                success, url = open_whatsapp_web(phone, whatsapp_msg)
+                if success:
+                    messagebox.showinfo("📱 WhatsApp Opened", 
+                                      f"WhatsApp Web opened with E-Bill!\n\n"
+                                      f"📞 To: {phone}\n\n"
+                                      f"Please click 'Send' in WhatsApp to deliver the E-Bill.")
+                else:
+                    messagebox.showerror("❌ Error", "Failed to open WhatsApp Web")
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Failed to send E-Bill: {e}")
+    
+    if customer_phone and customer_phone.strip():
+        ebill_btn = tk.Button(btn_container, text="📱 Send E-Bill to Customer", 
+                             font=('Arial', 10, 'bold'), bg='#27ae60', fg='white',
+                             relief='flat', padx=20, pady=8, cursor='hand2',
+                             command=send_ebill)
+        ebill_btn.pack(side="left", padx=(0,10))
+    else:
+        # Disabled button with explanation
+        disabled_btn = tk.Button(btn_container, text="📱 Send E-Bill (No Phone)", 
+                               font=('Arial', 10), bg='#bdc3c7', fg='#7f8c8d',
+                               relief='flat', padx=20, pady=8, state='disabled')
+        disabled_btn.pack(side="left", padx=(0,10))
+    
+    # View Profit button
+    def show_profit_analysis():
+        if profit_msg:
+            show_profit_popup(profit_msg, sale_type)
+        else:
+            messagebox.showinfo("ℹ️ Info", "No profit analysis available for this sale.")
+    
+    profit_btn = tk.Button(btn_container, text="📊 View Profit", 
+                          font=('Arial', 10, 'bold'), bg='#f39c12', fg='white',
+                          relief='flat', padx=20, pady=8, cursor='hand2',
+                          command=show_profit_analysis)
+    profit_btn.pack(side="left")
+    
+
+
+def print_bill_text(bill_text):
+    """Direct print function - prints immediately to default printer"""
+    try:
+        import win32print
+        import win32api
+        import tempfile
+        import os
+        
+        # Get default printer
+        default_printer = win32print.GetDefaultPrinter()
+        
+        if not default_printer:
+            messagebox.showerror("❌ No Printer", "No default printer found!\nPlease set up a printer first.")
+            return
+        
+        # Create temporary file for printing
+        try:
+            # Try UTF-8 first
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
+                f.write(bill_text)
+                temp_file = f.name
+        except UnicodeEncodeError:
+            # Fallback to ASCII-safe version
+            safe_bill_text = bill_text.replace('₹', 'Rs.').replace('🧾', '').replace('📅', '').replace('👤', '').replace('📱', '').replace('💰', '')
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='ascii', errors='ignore') as f:
+                f.write(safe_bill_text)
+                temp_file = f.name
+        
+        # Print directly to printer
+        win32api.ShellExecute(0, "print", temp_file, None, ".", 0)
+        
+        # Clean up temp file after a short delay
+        import threading
+        def cleanup():
+            import time
+            time.sleep(3)  # Wait 3 seconds for printing to start
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+        
+        threading.Thread(target=cleanup, daemon=True).start()
+        
+        messagebox.showinfo("🖨️ Printing...", 
+                          f"✅ Bill sent to printer: {default_printer}\n\n"
+                          f"📄 Printing in progress...\n"
+                          f"Please wait for the bill to print!")
+        
+    except ImportError:
+        # Fallback if win32print not available - use notepad method
+        try:
+            import tempfile
+            import os
+            
+            # Create temp file
+            safe_bill_text = bill_text.replace('₹', 'Rs.')
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8', errors='ignore') as f:
+                f.write(safe_bill_text)
+                temp_file = f.name
+            
+            # Open and auto-print via notepad
+            os.system(f'notepad /p "{temp_file}"')
+            
+            messagebox.showinfo("🖨️ Print Dialog", 
+                              "Print dialog opened!\n\n"
+                              "✅ Select your printer\n"
+                              "✅ Click Print")
+        except Exception as e:
+            messagebox.showerror("❌ Print Error", f"Could not print: {e}")
+    
+    except Exception as e:
+        messagebox.showerror("❌ Print Error", f"Printing failed: {e}\n\nPlease check if printer is connected and try again.")
+
+def removed_pdf_function():
+    """Generate PDF bill using reportlab or fallback methods"""
+    try:
+        # Try using reportlab for professional PDF
+        from reportlab.lib.pagesizes import A4
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import inch
+        from reportlab.lib import colors
+        
+        # Create filename with timestamp
+        timestamp = int(time.time())
+        filename = f"canteen_bill_{timestamp}.pdf"
+        
+        # Try to save in Documents folder, fallback to current directory
+        try:
+            import os
+            documents_path = os.path.join(os.path.expanduser("~"), "Documents")
+            if not os.path.exists(documents_path):
+                documents_path = os.getcwd()
+            pdf_path = os.path.join(documents_path, filename)
+        except:
+            pdf_path = filename
+        
+        # Create PDF document
+        doc = SimpleDocTemplate(pdf_path, pagesize=A4, 
+                              rightMargin=72, leftMargin=72, 
+                              topMargin=72, bottomMargin=18)
+        
+        # Get styles
+        styles = getSampleStyleSheet()
+        
+        # Create custom styles
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=16,
+            spaceAfter=30,
+            alignment=1,  # Center alignment
+            textColor=colors.darkblue
+        )
+        
+        bill_style = ParagraphStyle(
+            'BillText',
+            parent=styles['Normal'],
+            fontSize=10,
+            fontName='Courier',
+            spaceAfter=12,
+            leftIndent=20,
+            rightIndent=20
+        )
+        
+        # Build PDF content
+        story = []
+        
+        # Title
+        story.append(Paragraph("🧾 CANTEEN BILL RECEIPT", title_style))
+        story.append(Spacer(1, 12))
+        
+        # Bill content - convert to HTML-safe format
+        bill_lines = bill_text.split('\n')
+        for line in bill_lines:
+            # Replace special characters for HTML
+            safe_line = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            story.append(Paragraph(safe_line, bill_style))
+        
+        # Build PDF
+        doc.build(story)
+        
+        return pdf_path
+        
+    except ImportError:
+        # Reportlab not available, try alternative method
+        return generate_simple_pdf(bill_text, customer_phone)
+    except Exception as e:
+        print(f"PDF generation error: {e}")
+        return None
+
+def generate_simple_pdf(bill_text, customer_phone=""):
+    """Simple PDF generation using built-in libraries"""
+    try:
+        # Try using weasyprint or other alternatives
+        # For now, create an HTML file and suggest conversion
+        timestamp = int(time.time())
+        html_filename = f"canteen_bill_{timestamp}.html"
+        
+        # Try to save in Documents folder
+        try:
+            documents_path = os.path.join(os.path.expanduser("~"), "Documents")
+            if not os.path.exists(documents_path):
+                documents_path = os.getcwd()
+            html_path = os.path.join(documents_path, html_filename)
+        except:
+            html_path = html_filename
+        
+        # Create HTML content
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Canteen Bill</title>
+            <style>
+                body {{ font-family: 'Courier New', monospace; margin: 40px; }}
+                .bill {{ background: white; padding: 20px; border: 1px solid #ccc; }}
+                .header {{ text-align: center; font-size: 18px; font-weight: bold; margin-bottom: 20px; }}
+                .content {{ white-space: pre-line; line-height: 1.4; }}
+                @media print {{ body {{ margin: 0; }} .bill {{ border: none; }} }}
+            </style>
+        </head>
+        <body>
+            <div class="bill">
+                <div class="header">🧾 CANTEEN BILL RECEIPT</div>
+                <div class="content">{bill_text}</div>
+            </div>
+            <script>
+                // Auto-print when opened
+                window.onload = function() {{
+                    if (confirm('Would you like to print this bill now?')) {{
+                        window.print();
+                    }}
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        
+        # Write HTML file
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        return html_path
+        
+    except Exception as e:
+        print(f"Simple PDF generation error: {e}")
+        return None
+
+# Printable bill function removed - using e-bill only
+def removed_printable_function():
+    """Show bill in a separate window for easy copying and printing"""
+    win = tk.Toplevel(root)
+    win.title("🖨️ Printable Bill")
+    win.geometry("600x500")
+    win.configure(bg='white')
+    win.resizable(True, True)
+    win.transient(root)
+    
+    # Header
+    header = tk.Frame(win, bg=PRIMARY_COLOR, height=50)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    
+    tk.Label(header, text="🖨️ Bill Ready for Printing", font=('Arial', 14, 'bold'), 
+             fg='white', bg=PRIMARY_COLOR).pack(pady=15)
+    
+    # Instructions
+    inst_frame = tk.Frame(win, bg='#f0f8ff')
+    inst_frame.pack(fill="x", padx=10, pady=5)
+    
+    tk.Label(inst_frame, text="📋 Instructions: Select all text (Ctrl+A), Copy (Ctrl+C), then paste in any text editor and print (Ctrl+P)", 
+             font=('Arial', 10), bg='#f0f8ff', fg='#333', wraplength=550).pack(pady=8)
+    
+    # Bill text area
+    text_frame = tk.Frame(win, bg='white')
+    text_frame.pack(fill="both", expand=True, padx=10, pady=5)
+    
+    # Text widget with scrollbar
+    text_widget = tk.Text(text_frame, font=('Courier', 10), bg='white', 
+                         relief='solid', bd=1, wrap='none')
+    scrollbar = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
+    text_widget.configure(yscrollcommand=scrollbar.set)
+    
+    text_widget.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    
+    # Insert bill text
+    text_widget.insert('1.0', bill_text)
+    text_widget.focus_set()
+    text_widget.select_range('1.0', 'end')  # Select all text
+    
+    # Buttons
+    btn_frame = tk.Frame(win, bg='white')
+    btn_frame.pack(fill="x", padx=10, pady=10)
+    
+    def copy_and_close():
+        try:
+            root.clipboard_clear()
+            root.clipboard_append(bill_text)
+            messagebox.showinfo("✅ Copied", "Bill copied to clipboard! You can now paste and print.")
+            win.destroy()
+        except Exception as e:
+            messagebox.showerror("❌ Error", f"Failed to copy: {e}")
+    
+    ttk.Button(btn_frame, text="📋 Copy & Close", command=copy_and_close, 
+              style='Success.TButton').pack(side="left", padx=(0,10))
+    ttk.Button(btn_frame, text="✅ Close", command=win.destroy).pack(side="right")
+
+def show_profit_popup(profit_msg, sale_type=""):
+    """Show profit analysis in separate popup"""
+    win = tk.Toplevel(root)
+    win.title("📊 Profit Analysis")
+    win.geometry("500x400")
+    win.configure(bg='white')
+    win.resizable(True, True)
+    win.transient(root)
+    
+    # Header
+    header = tk.Frame(win, bg=WARNING_COLOR, height=60)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    
+    tk.Label(header, text="📊 Profit Analysis Report", font=('Arial', 14, 'bold'), 
+             fg='white', bg=WARNING_COLOR).pack(pady=20)
+    
+    # Main frame
+    main_frame = tk.Frame(win, bg='white')
+    main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+    
+    # Sale info
+    if sale_type:
+        tk.Label(main_frame, text=f"Sale Type: {sale_type}", font=('Arial', 11, 'bold'), 
+                 fg=DARK_TEXT, bg='white').pack(anchor="w", pady=(0,10))
+    
+    # Profit analysis display
+    profit_frame = tk.Frame(main_frame, bg='white', relief='solid', bd=1)
+    profit_frame.pack(fill="both", expand=True, pady=(0,20))
+    
+    profit_display = tk.Text(profit_frame, font=('Arial', 11), bg='#f0f8f0', 
+                           relief='flat', wrap='word')
+    profit_display.pack(fill="both", expand=True, padx=15, pady=15)
+    profit_display.insert('1.0', profit_msg)
+    profit_display.config(state='disabled')
+    
+    # Buttons
+    btn_frame = tk.Frame(main_frame, bg='white')
+    btn_frame.pack(fill="x")
+    
+    ttk.Button(btn_frame, text="📋 Copy Analysis", 
+              command=lambda: copy_to_clipboard(profit_msg)).pack(side="left", padx=(0,10))
+    ttk.Button(btn_frame, text="✅ Close", command=win.destroy).pack(side="right")
+
+def copy_to_clipboard(text):
+    """Copy text to clipboard"""
+    try:
+        root.clipboard_clear()
+        root.clipboard_append(text)
+        messagebox.showinfo("✅ Copied", "Text copied to clipboard!")
+    except Exception as e:
+        messagebox.showerror("❌ Error", f"Failed to copy: {e}")
+
+def show_production_prediction():
+    """Show tomorrow's production prediction popup"""
+    win = tk.Toplevel(root)
+    win.title("📊 Tomorrow's Production Prediction")
+    win.geometry("800x600")
+    win.configure(bg='white')
+    win.resizable(True, True)
+    win.transient(root)
+    
+    # Header
+    header = tk.Frame(win, bg=PRIMARY_COLOR, height=60)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+    
+    tk.Label(header, text="📊 Tomorrow's Production Prediction", font=('Arial', 14, 'bold'), 
+             fg='white', bg=PRIMARY_COLOR).pack(pady=20)
+    
+    # Main frame
+    main_frame = tk.Frame(win, bg='white')
+    main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+    
+    # Instructions
+    tk.Label(main_frame, text="📈 Based on current inventory levels and material requirements:", 
+             font=('Arial', 12), fg=DARK_TEXT, bg='white').pack(anchor="w", pady=(0,15))
+    
+    # Prediction table
+    pred_frame = tk.Frame(main_frame, bg='white')
+    pred_frame.pack(fill="both", expand=True)
+    
+    # Table headers
+    pred_cols = ("Category", "Max Units", "Limiting Factor")
+    pred_tree = ttk.Treeview(pred_frame, columns=pred_cols, show="headings", height=15, style='Custom.Treeview')
+    
+    # Configure columns
+    pred_tree.heading("Category", text="📋 Category")
+    pred_tree.heading("Max Units", text="🔢 Max Units Tomorrow")
+    pred_tree.heading("Limiting Factor", text="⚠️ Limiting Factor")
+    
+    pred_tree.column("Category", width=200, anchor="w")
+    pred_tree.column("Max Units", width=150, anchor="center")
+    pred_tree.column("Limiting Factor", width=400, anchor="w")
+    
+    # Add scrollbars
+    pred_v_scroll = ttk.Scrollbar(pred_frame, orient="vertical", command=pred_tree.yview)
+    pred_h_scroll = ttk.Scrollbar(pred_frame, orient="horizontal", command=pred_tree.xview)
+    pred_tree.configure(yscrollcommand=pred_v_scroll.set, xscrollcommand=pred_h_scroll.set)
+    
+    pred_tree.pack(side="left", fill="both", expand=True)
+    pred_v_scroll.pack(side="right", fill="y")
+    pred_h_scroll.pack(side="bottom", fill="x")
+    
+    # Load predictions
+    predictions = predict_tomorrow_production()
+    
+    total_possible = 0
+    for category_name, max_units, limiting_factor in predictions:
+        if max_units > 0:
+            total_possible += max_units
+            tag = "can_produce"
+        else:
+            tag = "cannot_produce"
+        
+        pred_tree.insert("", "end", values=(category_name, max_units, limiting_factor), tags=(tag,))
+    
+    # Configure tags for color coding
+    pred_tree.tag_configure("can_produce", background="#e8f5e8")
+    pred_tree.tag_configure("cannot_produce", background="#ffe8e8")
+    
+    # Summary
+    summary_frame = tk.Frame(main_frame, bg='white')
+    summary_frame.pack(fill="x", pady=(20,0))
+    
+    tk.Label(summary_frame, text=f"📊 Summary: {len([p for p in predictions if p[1] > 0])} categories can be produced tomorrow", 
+             font=('Arial', 12, 'bold'), fg=SUCCESS_COLOR, bg='white').pack(anchor="w")
+    
+    tk.Label(summary_frame, text=f"🔢 Total possible units across all categories: {total_possible}", 
+             font=('Arial', 11), fg=DARK_TEXT, bg='white').pack(anchor="w", pady=(5,0))
+    
+    # Buttons - with more spacing to make them prominent
+    btn_frame = tk.Frame(main_frame, bg='white')
+    btn_frame.pack(fill="x", pady=(30,20))
+    
+    def refresh_predictions():
+        # Clear existing items
+        for item in pred_tree.get_children():
+            pred_tree.delete(item)
+        
+        # Reload predictions
+        new_predictions = predict_tomorrow_production()
+        new_total = 0
+        
+        for category_name, max_units, limiting_factor in new_predictions:
+            if max_units > 0:
+                new_total += max_units
+                tag = "can_produce"
+            else:
+                tag = "cannot_produce"
+            
+            pred_tree.insert("", "end", values=(category_name, max_units, limiting_factor), tags=(tag,))
+        
+        # Update summary
+        for widget in summary_frame.winfo_children():
+            widget.destroy()
+        
+        tk.Label(summary_frame, text=f"📊 Summary: {len([p for p in new_predictions if p[1] > 0])} categories can be produced tomorrow", 
+                 font=('Arial', 12, 'bold'), fg=SUCCESS_COLOR, bg='white').pack(anchor="w")
+        
+        tk.Label(summary_frame, text=f"🔢 Total possible units across all categories: {new_total}", 
+                 font=('Arial', 11), fg=DARK_TEXT, bg='white').pack(anchor="w", pady=(5,0))
+    
+    # Make buttons MUCH bigger and more visible
+    refresh_btn = tk.Button(btn_frame, text="🔄 REFRESH PREDICTIONS", 
+                           font=('Arial', 16, 'bold'), bg='#2980b9', fg='white',
+                           relief='raised', bd=3, padx=40, pady=20, cursor='hand2',
+                           width=20, height=2, command=refresh_predictions)
+    refresh_btn.pack(side="left", padx=20, pady=10)
+    
+    close_btn = tk.Button(btn_frame, text="✅ CLOSE", 
+                         font=('Arial', 16, 'bold'), bg='#7f8c8d', fg='white',
+                         relief='raised', bd=3, padx=40, pady=20, cursor='hand2',
+                         width=15, height=2, command=win.destroy)
+    close_btn.pack(side="right", padx=20, pady=10)
 
 def show_supplier_notify_popup(low_item, supplier):
     """
@@ -1763,7 +2392,10 @@ sales_frame = tk.LabelFrame(cat_right, text="💰 Sales Operations", font=('Aria
 sales_frame.pack(fill="x", padx=15, pady=10)
 
 ttk.Button(sales_frame, text="Record Sale & Deduct Stock", command=sale_popup, 
-           style='Warning.TButton').pack(fill="x", padx=10, pady=10)
+           style='Warning.TButton').pack(fill="x", padx=10, pady=5)
+
+ttk.Button(sales_frame, text="📊 Tomorrow's Production Prediction", command=show_production_prediction, 
+           style='Primary.TButton').pack(fill="x", padx=10, pady=5)
 
 ttk.Button(cat_btn_frame, text="🔄 Refresh Categories", command=load_categories, 
            style='Primary.TButton').pack(fill="x", pady=5)
